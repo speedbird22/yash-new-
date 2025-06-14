@@ -56,49 +56,27 @@ def calculate_score(entry):
     if entry.get("diet_match"): base_score += 3
     return base_score
 
-# Allergy mapping: Map "Allergy-Free" labels to actual allergens
+# Allergy mapping: Map "Allergy-Free" labels to ingredients to exclude
 ALLERGY_MAPPING = {
     "Nut-Free": ["peanuts", "almonds", "walnuts", "cashews", "hazelnuts", "peanut butter", "almond milk", "almond extract", "nut"],
     "Shellfish-Free": ["shrimp", "crab", "lobster", "mussels", "clams", "prawns", "shellfish"],
     "Soy-Free": ["soy", "tofu", "soybean", "edamame", "soy sauce", "soy milk", "tamari"],
-    "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream", "whey", "casein", "lactose"]
-}
-
-# Dietary tag mapping: Expanded to handle more variations
-DIETARY_TAG_MAPPING = {
-    "vegan": "Vegan",
-    "plant-based": "Vegan",
-    "veg": "Vegan",
-    "plantbased": "Vegan",
-    "vegetarian": "Vegetarian",
-    "veggie": "Vegetarian",
-    "vegie": "Vegetarian",
-    "vegetarian-friendly": "Vegetarian",
-    "keto": "Keto",
-    "ketogenic": "Keto",
-    "low-carb": "Keto",
-    "lowcarb": "Keto",
-    "gluten-free": "Gluten-Free",
-    "gf": "Gluten-Free",
-    "gluten free": "Gluten-Free",
-    "glutenfree": "Gluten-Free",
-    "paleo": "Paleo",
-    "paleolithic": "Paleo",
-    "whole30": "Paleo",
-    "grain-free": "Paleo",
-    "grainfree": "Paleo"
+    "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream", "whey", "casein", "lactose"],
+    "Veg": ["chicken", "beef", "pork", "lamb", "fish", "turkey", "duck", "venison", "meat"],
+    "Non-Veg": [],  # Special handling: exclude items without non-veg ingredients
+    "Gluten": ["wheat", "barley", "rye", "malt", "flour", "bread", "pasta"],
+    "Vegan": ["milk", "cheese", "yogurt", "butter", "cream", "egg", "honey", "gelatin", "meat", "fish", "chicken", "beef", "pork"]
 }
 
 # Sidebar Preferences
 st.sidebar.header("Customer Preferences")
-dietary = st.sidebar.multiselect("Diet", ["Vegan", "Vegetarian", "Keto", "Gluten-Free", "Paleo"], default=[])
-allergies = st.sidebar.multiselect("Allergies", ["Nut-Free", "Shellfish-Free", "Soy-Free", "Dairy-Free"], default=[])
+allergies = st.sidebar.multiselect("Dietary Restrictions & Allergies", ["Nut-Free", "Shellfish-Free", "Soy-Free", "Dairy-Free", "Veg", "Non-Veg", "Gluten", "Vegan"], default=[])
 user_id = st.sidebar.text_input("User ID (for Order History)", value="test_user")  # Placeholder for user ID input
 
 # TABS
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📷 AI Dish Detection", "🎯 Personalized Menu", "⚙️ Custom Filters", "🏅 Visual Menu Challenge", "📊 Leaderboard"])
 
-# TAB 1: AI Dish Detection (Enhanced)
+# TAB 1: AI Dish Detection (Updated to remove dietary references)
 with tab1:
     st.header("Visual Dish Detection (AI + Vision API)")
     uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "jpeg", "png"])
@@ -151,7 +129,7 @@ with tab1:
             f"{item['name']}: {item.get('description', '')} (Ingredients: {', '.join(item.get('ingredients', []))}; Tags: {', '.join(item.get('dietary_tags', []))})"
             for item in menu
         ])
-        user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
+        user_profile = f"Restrictions & Allergies: {', '.join(allergies) if allergies else 'None'}"
 
         # Calculate similarity scores for menu items
         matching_dishes = []
@@ -186,9 +164,9 @@ with tab1:
 
         Tasks:
         1. Predict the most likely dish from the menu that matches the image, prioritizing high-confidence labels (score > 0.8), detected text, and plating style.
-        2. If no exact match, suggest the closest dish and explain why it fits the labels, text, style, and user profile.
-        3. Recommend 3 additional relevant dishes from the menu that align with the detected dish's characteristics, user preferences, and event context.
-        4. For pasta dishes, suggest variations like gluten-free penne, zucchini noodles, or customizable sauces.
+        2. If no exact match, suggest the closest dish and explain why it fits the labels, text, style, and user profile (considering restrictions like Veg, Non-Veg, Gluten, Vegan, and other allergies).
+        3. Recommend 3 additional relevant dishes from the menu that align with the detected dish's characteristics, user restrictions, and event context.
+        4. For pasta dishes, suggest variations like alternative noodles or customizable sauces.
         5. For desserts, suggest low-sugar, dairy-free, or healthy alternatives.
 
         Format the response as:
@@ -231,7 +209,7 @@ with tab1:
         except Exception as e:
             st.error(f"AI analysis failed: {e}")
 
-# TAB 2: Personalized Menu Recommendations (Enhanced)
+# TAB 2: Personalized Menu Recommendations (Updated to remove dietary references)
 with tab2:
     st.header("Personalized AI Menu")
     menu = fetch_menu()
@@ -239,7 +217,7 @@ with tab2:
         f"- {item['name']}: {item.get('description', '')} (Ingredients: {', '.join(item.get('ingredients', []))}; Tags: {', '.join(item.get('dietary_tags', []))})"
         for item in menu
     ])
-    user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
+    user_profile = f"Restrictions & Allergies: {', '.join(allergies) if allergies else 'None'}"
     order_history = fetch_order_history(user_id)
     order_summary = "\n".join([f"- {order['dish_name']} (Ordered on: {time.ctime(order['timestamp'])})" for order in order_history]) if order_history else "No order history available."
 
@@ -254,8 +232,8 @@ with tab2:
     - Menu: {menu_text}
 
     Tasks:
-    1. Recommend 5 dishes that align with the user's dietary preferences, allergies, past orders, and current trends.
-    2. For pasta dishes, suggest variations like gluten-free penne, zucchini noodles, or customizable sauces.
+    1. Recommend 5 dishes that align with the user's restrictions (e.g., Veg, Non-Veg, Gluten, Vegan, and other allergies), past orders, and current trends.
+    2. For pasta dishes, suggest variations like alternative noodles or customizable sauces.
     3. For desserts, suggest low-sugar, dairy-free, or healthy alternatives.
 
     Format the response as:
@@ -272,79 +250,62 @@ with tab2:
     ai_result = gemini_model.generate_content(prompt).text.strip()
     st.markdown(ai_result)
 
-# TAB 3: Custom Filtering Options (Updated Filtering Logic)
+# TAB 3: Custom Filtering Options (Updated to remove dietary filter and use only allergy filter)
 with tab3:
     st.header("Custom Menu Filters")
     portion = st.selectbox("Portion Size", ["Regular", "Small", "Large"])
     ingredient_swap = st.text_input("Ingredient Swap")
-    include_untagged = st.checkbox("Include items without dietary tags when preferences are selected", value=False)
 
     menu = fetch_menu()
     filtered_menu = []
     debug_info = []  # To store debug information about why items are filtered out
 
     for item in menu:
-        # Standardize dietary tags
-        raw_tags = item.get("dietary_tags", [])
-        if not raw_tags:  # If dietary_tags is missing or empty
-            tags = []
-            if dietary:  # If a dietary preference is selected
-                if include_untagged:
-                    diet_match = True
-                    debug_info.append(f"Item '{item['name']}' included: No dietary_tags present, but 'Include untagged items' is enabled.")
-                else:
-                    diet_match = False
-                    debug_info.append(f"Item '{item['name']}' filtered out: No dietary_tags present, and dietary preferences ({dietary}) were selected.")
-            else:  # If no dietary preferences are selected, include the item
-                diet_match = True
-                debug_info.append(f"Item '{item['name']}' included: No dietary_tags present, and no dietary preferences selected.")
-        else:
-            tags = []
-            for tag in raw_tags:
-                tag_lower = tag.lower()
-                # Map alternative tags to standard ones
-                standardized_tag = DIETARY_TAG_MAPPING.get(tag_lower, tag_lower)
-                tags.append(standardized_tag.lower())  # Store tags in lowercase for comparison
-
-            # Dietary filter: Match if ANY selected diet is in the item's tags (case-insensitive)
-            diet_match = not dietary or any(d.lower() in tags for d in dietary)
-            debug_info.append(f"Item '{item['name']}': Dietary match check - Selected diets: {dietary}, Standardized tags (lowercase): {tags}, Match: {diet_match}")
-
         ingredients = [ing.lower() for ing in item.get("ingredients", [])]
 
-        # Allergy filter: Exclude items containing allergens (with word-based matching)
-        allergy_match = True
-        for allergy in allergies:
-            allergens = ALLERGY_MAPPING.get(allergy, [])
-            for allergen in allergens:
-                # Check if the allergen is a whole word in any ingredient
-                # Split ingredients into words and check for exact matches
+        # Allergy filter: Exclude items based on selected restrictions and allergies
+        restriction_match = True
+        for restriction in allergies:
+            # Special handling for "Non-Veg"
+            if restriction == "Non-Veg":
+                # Check if the item has any non-veg ingredients
+                non_veg_ingredients = ALLERGY_MAPPING["Veg"]  # Use the same list as "Veg" to identify non-veg ingredients
+                has_non_veg = any(
+                    any(non_veg_ing.lower() in ing.split() for ing in ingredients)
+                    for non_veg_ing in non_veg_ingredients
+                )
+                if not has_non_veg:
+                    restriction_match = False
+                    debug_info.append(f"Item '{item['name']}' filtered out: Does not contain non-veg ingredients. Selected restriction: 'Non-Veg'. Ingredients: {ingredients}")
+                continue
+
+            # Handle other restrictions/allergies (Veg, Gluten, Vegan, Nut-Free, etc.)
+            items_to_exclude = ALLERGY_MAPPING.get(restriction, [])
+            for item_to_exclude in items_to_exclude:
+                # Check if the item_to_exclude is a whole word in any ingredient
                 for ing in ingredients:
                     words = ing.split()
-                    if allergen.lower() in words:  # Exact word match
-                        allergy_match = False
-                        debug_info.append(f"Item '{item['name']}' filtered out: Contains allergen '{allergen}' (from allergy '{allergy}'). Ingredients: {ingredients}")
+                    if item_to_exclude.lower() in words:  # Exact word match
+                        restriction_match = False
+                        debug_info.append(f"Item '{item['name']}' filtered out: Contains '{item_to_exclude}' (from restriction '{restriction}'). Ingredients: {ingredients}")
                         break
-                if not allergy_match:
+                if not restriction_match:
                     break
-            if not allergy_match:
+            if not restriction_match:
                 break
 
-        if diet_match and allergy_match:
+        if restriction_match:
             item_copy = item.copy()
             item_copy["portion_size"] = portion
             item_copy["ingredient_swap"] = ingredient_swap
             filtered_menu.append(item_copy)
         else:
-            if not diet_match:
-                debug_info.append(f"Item '{item['name']}' filtered out due to dietary mismatch. Selected diets: {dietary}, Item tags: {raw_tags}")
-            elif not allergy_match:
-                debug_info.append(f"Item '{item['name']}' filtered out due to allergy mismatch. Selected allergies: {allergies}, Item ingredients: {item.get('ingredients', [])}")
+            debug_info.append(f"Item '{item['name']}' filtered out due to restriction mismatch. Selected restrictions: {allergies}, Item ingredients: {item.get('ingredients', [])}")
 
     if filtered_menu:
         st.write(pd.DataFrame(filtered_menu))
     else:
-        st.warning("No menu items match your dietary preferences and allergy restrictions.")
+        st.warning("No menu items match your restrictions and allergy settings.")
         # Display debug info to help diagnose the issue
         with st.expander("Debug Information: Why were items filtered out?"):
             if debug_info:
