@@ -10,6 +10,7 @@ import pandas as pd
 import random
 import time
 import uuid
+from fuzzywuzzy import fuzz
 
 # Streamlit config
 st.set_page_config(page_title="Next-Gen Dish Recommender + Gamification", layout="wide")
@@ -57,7 +58,7 @@ allergies = st.sidebar.multiselect("Allergies", ["Nut-Free", "Shellfish-Free", "
 # TABS
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📷 AI Dish Detection", "🎯 Personalized Menu", "⚙️ Custom Filters", "🏅 Visual Menu Challenge", "📊 Leaderboard"])
 
-# TAB 1: AI Dish Detection (Updated)
+# TAB 1: AI Dish Detection (Enhanced)
 with tab1:
     st.header("Visual Dish Detection (AI + Vision API)")
     uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "jpeg", "png"])
@@ -65,52 +66,112 @@ with tab1:
         # Preprocess image
         image = Image.open(uploaded_file).convert("RGB")
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.2)
+        image = enhancer.enhance(1.3)  # Slightly higher contrast for clarity
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.1)  # Improve brightness
         st.image(image, caption="Uploaded Image", use_column_width=True)
         img_bytes = io.BytesIO()
         image.save(img_bytes, format="JPEG")
         content = img_bytes.getvalue()
 
-        # Vision API: Label detection and object localization
-        response = vision_client.label_detection(image=vision.Image(content=content))
-        labels = [label.description for label in response.label_annotations if label.score > 0.7]
-        obj_response = vision_client.object_localization(image=vision.Image(content=content))
-        objects = [obj.name for obj in obj_response.localized_object_annotations]
+        # Vision API: Label detection, object localization, and text detection
+        vision_image = vision.Image(content=content)
+        label_response = vision_client.label_detection(image=vision_image)
+        labels = [(label.description, label.score) for label in label_response.label_annotations if label.score > 0.7]
+        obj_response = vision_client.object_localization(image=vision_image)
+        objects = [(obj.name, obj.score) for obj in obj_response.localized_object_annotations]
+        text_response = vision_client.text_detection(image=vision_image)
+        texts = [text.description.lower().strip() for text in text_response.text_annotations[1:] if text.description.strip()]
 
-        # Combine labels and objects
-        combined_labels = list(set(labels + objects))
-        st.write(f"Detected Labels and Objects: {combined_labels}")
+        # Combine and filter detections
+        combined_labels = [desc.lower() for desc, score in labels + objects]
+        combined_labels = list(set(combined_labels + texts))
+        st.write(f"Detected Labels, Objects, and Text: {combined_labels}")
 
         # Check if food-related
-        food_related = any(label.lower() in ["food", "dish", "meal"] or "food" in label.lower() for label in combined_labels)
+        food_related = any(
+            label.lower() in ["food", "dish", "meal"] or "food" in label.lower() or any(food_term in label.lower() for food_term in ["pizza", "burger", "pasta", "salad", "sushi"])
+            for label in combined_labels
+        )
         if not food_related:
             st.warning("The image doesn't appear to contain food. Please upload a food-related image.")
             st.stop()
 
-        # Cross-reference with menu
+        # Cross-reference with Firestore menu
         menu = fetch_menu()
-        menu_text = "\n".join([f"{item['name']}: {item.get('description', '')} ({', '.join(item.get('dietary_tags', []))})" for item in menu])
+        menu_text = "\n".join([
+            f"{item['name']}: {item.get('description', '')} (Ingredients: {', '.join(item.get('ingredients', []))}; Tags: {', '.join(item.get('dietary_tags', []))})"
+            for item in menu
+        ])
         user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
+
+        # Calculate similarity scores for menu items
         matching_dishes = []
         for item in menu:
-            ingredients = item.get('ingredients', [])
-            tags = item.get('dietary_tags', [])
-            if any(label.lower() in ' '.join(ingredients + tags).lower() for label in combined_labels):
-                matching_dishes.append(item['name'])
+            item_text = ' '.join([
+                item['name'].lower(),
+                item.get('description', '').lower(),
+                ' '.join(item.get('ingredients', [])).lower(),
+                ' '.join(item.get('dietary_tags', [])).lower()
+            ])
+            score = max(fuzz.partial_ratio(label, item_text) for label in combined_labels)
+            if score > 60:  # Threshold for relevance
+                matching_dishes.append({
+                    "name": item['name'],
+                    "score": score,
+                    "description": item.get('description', ''),
+                    "ingredients": item.get('ingredients', []),
+                    "dietary_tags": item.get('dietary_tags', []),
+                    "id": item['id']
+                })
+        matching_dishes = sorted(matching_dishes, key=lambda x: x['score'], reverse=True)[:5]  # Top 5 matches
 
-        # Gemini prompt with context
+        # Gemini prompt for precise dish prediction
         prompt = f"""
-        Based on the following image labels and objects: {combined_labels}
-        And the user's profile: {user_profile}
-        Predict the most likely dish from this menu:
-        {menu_text}
-        If no exact match, suggest the closest dish and explain why it fits the labels and profile.
+        Analyze the following:
+        - Image labels and objects: {labels + objects}
+        - Detected text: {texts if texts else 'None'}
+        - User profile: {user_profile}
+        - Menu items: {menu_text}
+
+        Tasks:
+        1. Predict the most likely dish from the menu that matches the image, prioritizing high-confidence labels (score > 0.8) and detected text.
+        2. If no exact match, suggest the closest dish and explain why it fits the labels, text, and user profile.
+        3. Recommend 3 additional relevant dishes from the menu that align with the detected dish's characteristics and user preferences.
+
         Format the response as:
-        **Dish**: [Dish Name]
+        **Predicted Dish**: [Dish Name]
         **Explanation**: [Reasoning]
+        **Related Menu Items**:
+        - [Dish Name]: [Description] (Similarity: [Score]%)
+        - ...
+        **Relevant Recommendations**:
+        - [Dish Name]: [Reason]
+        - ...
         """
-        dish_guess = gemini_model.generate_content(prompt).text.strip()
-        st.success(f"Predicted Dish:\n{dish_guess}")
+        try:
+            dish_guess = gemini_model.generate_content(prompt).text.strip()
+            st.success(f"AI Dish Analysis:\n{dish_guess}")
+
+            # Display related menu items as a table
+            if matching_dishes:
+                st.subheader("Related Menu Items")
+                df = pd.DataFrame([
+                    {
+                        "Dish Name": dish['name'],
+                        "Description": dish['description'],
+                        "Ingredients": ', '.join(dish['ingredients']),
+                        "Dietary Tags": ', '.join(dish['dietary_tags']),
+                        "Similarity Score": f"{dish['score']}%"
+                    }
+                    for dish in matching_dishes
+                ])
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No closely related menu items found.")
+
+        except Exception as e:
+            st.error(f"AI analysis failed: {e}")
 
         # Feedback form
         with st.form("feedback_form"):
@@ -120,6 +181,7 @@ with tab1:
             if feedback_submitted:
                 db.collection("dish_feedback").add({
                     "labels": combined_labels,
+                    "texts": texts,
                     "predicted_dish": dish_guess,
                     "feedback": feedback,
                     "correct_dish": correct_dish if feedback == "No" else None,
