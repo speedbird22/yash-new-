@@ -7,9 +7,7 @@ import google.generativeai as genai
 from PIL import Image, ImageEnhance
 import io
 import pandas as pd
-import random
 import time
-import uuid
 from fuzzywuzzy import fuzz
 
 # Streamlit config
@@ -40,23 +38,22 @@ except Exception as e:
 def fetch_menu():
     return [doc.to_dict() | {"id": doc.id} for doc in db.collection("menu").stream()]
 
-@st.cache_data(ttl=60)
-def fetch_challenge_entries():
-    return [doc.to_dict() | {"id": doc.id} for doc in db.collection("visual_challenges").stream()]
-
-def calculate_score(entry):
-    base_score = entry.get("views", 0) + entry.get("likes", 0) * 2 + entry.get("orders", 0) * 3
-    if entry.get("trendy"): base_score += 5
-    if entry.get("diet_match"): base_score += 3
-    return base_score
+@st.cache_data(ttl=300)
+def fetch_order_history(user_id):
+    # Assuming user_id is stored in session state or passed; for simplicity, using a placeholder
+    if not user_id:
+        return []
+    orders = db.collection("orders").where("user_id", "==", user_id).stream()
+    return [order.to_dict() | {"id": order.id} for order in orders]
 
 # Sidebar Preferences
 st.sidebar.header("Customer Preferences")
 dietary = st.sidebar.multiselect("Diet", ["Vegan", "Vegetarian", "Keto", "Gluten-Free", "Paleo"], default=[])
 allergies = st.sidebar.multiselect("Allergies", ["Nut-Free", "Shellfish-Free", "Soy-Free", "Dairy-Free"], default=[])
+user_id = st.sidebar.text_input("User ID (for Order History)", value="test_user")  # Placeholder for user ID input
 
 # TABS
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📷 AI Dish Detection", "🎯 Personalized Menu", "⚙️ Custom Filters", "🏅 Visual Menu Challenge", "📊 Leaderboard"])
+tab1, tab2, tab3 = st.tabs(["📷 AI Dish Detection", "🎯 Personalized Menu", "⚙️ Custom Filters"])
 
 # TAB 1: AI Dish Detection (Enhanced)
 with tab1:
@@ -66,15 +63,15 @@ with tab1:
         # Preprocess image
         image = Image.open(uploaded_file).convert("RGB")
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.3)  # Slightly higher contrast for clarity
+        image = enhancer.enhance(1.3)
         enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.1)  # Improve brightness
+        image = enhancer.enhance(1.1)
         st.image(image, caption="Uploaded Image", use_column_width=True)
         img_bytes = io.BytesIO()
         image.save(img_bytes, format="JPEG")
         content = img_bytes.getvalue()
 
-        # Vision API: Label detection, object localization, and text detection
+        # Vision API: Label detection, object localization, text detection, and properties for style
         vision_image = vision.Image(content=content)
         label_response = vision_client.label_detection(image=vision_image)
         labels = [(label.description, label.score) for label in label_response.label_annotations if label.score > 0.7]
@@ -82,11 +79,19 @@ with tab1:
         objects = [(obj.name, obj.score) for obj in obj_response.localized_object_annotations]
         text_response = vision_client.text_detection(image=vision_image)
         texts = [text.description.lower().strip() for text in text_response.text_annotations[1:] if text.description.strip()]
+        # Detect plating style via image properties or labels
+        properties_response = vision_client.image_properties(image=vision_image)
+        dominant_colors = properties_response.image_properties_annotation.dominant_colors.colors
+        style_indicators = [label[0].lower() for label in labels if "style" in label[0].lower() or "plating" in label[0].lower()]
+        if not style_indicators:
+            # Infer style from colors (e.g., vibrant colors might indicate modern plating)
+            style_indicators.append("modern" if any(color.color.red > 200 or color.color.green > 200 for color in dominant_colors) else "classic")
 
         # Combine and filter detections
         combined_labels = [desc.lower() for desc, score in labels + objects]
         combined_labels = list(set(combined_labels + texts))
         st.write(f"Detected Labels, Objects, and Text: {combined_labels}")
+        st.write(f"Detected Plating Style: {', '.join(style_indicators) if style_indicators else 'Not identified'}")
 
         # Check if food-related
         food_related = any(
@@ -115,7 +120,7 @@ with tab1:
                 ' '.join(item.get('dietary_tags', [])).lower()
             ])
             score = max(fuzz.partial_ratio(label, item_text) for label in combined_labels)
-            if score > 60:  # Threshold for relevance
+            if score > 60:
                 matching_dishes.append({
                     "name": item['name'],
                     "score": score,
@@ -124,20 +129,24 @@ with tab1:
                     "dietary_tags": item.get('dietary_tags', []),
                     "id": item['id']
                 })
-        matching_dishes = sorted(matching_dishes, key=lambda x: x['score'], reverse=True)[:5]  # Top 5 matches
+        matching_dishes = sorted(matching_dishes, key=lambda x: x['score'], reverse=True)[:5]
 
-        # Gemini prompt for precise dish prediction
+        # Gemini prompt for precise dish prediction with event-inspired dishes and AI-based suggestions
         prompt = f"""
         Analyze the following:
         - Image labels and objects: {labels + objects}
         - Detected text: {texts if texts else 'None'}
+        - Plating style: {', '.join(style_indicators) if style_indicators else 'Not identified'}
         - User profile: {user_profile}
         - Menu items: {menu_text}
+        - Event context: Current season is summer, and there is a 'Summer Feast' event with focus on light, refreshing dishes.
 
         Tasks:
-        1. Predict the most likely dish from the menu that matches the image, prioritizing high-confidence labels (score > 0.8) and detected text.
-        2. If no exact match, suggest the closest dish and explain why it fits the labels, text, and user profile.
-        3. Recommend 3 additional relevant dishes from the menu that align with the detected dish's characteristics and user preferences.
+        1. Predict the most likely dish from the menu that matches the image, prioritizing high-confidence labels (score > 0.8), detected text, and plating style.
+        2. If no exact match, suggest the closest dish and explain why it fits the labels, text, style, and user profile.
+        3. Recommend 3 additional relevant dishes from the menu that align with the detected dish's characteristics, user preferences, and event context.
+        4. For pasta dishes, suggest variations like gluten-free penne, zucchini noodles, or customizable sauces.
+        5. For desserts, suggest low-sugar, dairy-free, or healthy alternatives.
 
         Format the response as:
         **Predicted Dish**: [Dish Name]
@@ -147,6 +156,12 @@ with tab1:
         - ...
         **Relevant Recommendations**:
         - [Dish Name]: [Reason]
+        - ...
+        **Pasta Variations (if applicable)**:
+        - [Variation]: [Description]
+        - ...
+        **Dessert Alternatives (if applicable)**:
+        - [Alternative]: [Description]
         - ...
         """
         try:
@@ -173,16 +188,44 @@ with tab1:
         except Exception as e:
             st.error(f"AI analysis failed: {e}")
 
-# TAB 2: Personalized Menu Recommendations
+# TAB 2: Personalized Menu Recommendations (Enhanced)
 with tab2:
     st.header("Personalized AI Menu")
     menu = fetch_menu()
     menu_text = "\n".join([
-        f"- {item['name']}: {item.get('description', '')} ({', '.join(item.get('dietary_tags', []))})"
+        f"- {item['name']}: {item.get('description', '')} (Ingredients: {', '.join(item.get('ingredients', []))}; Tags: {', '.join(item.get('dietary_tags', []))})"
         for item in menu
     ])
     user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
-    prompt = f"Given user profile ({user_profile}) recommend 5 dishes:\n{menu_text}"
+    order_history = fetch_order_history(user_id)
+    order_summary = "\n".join([f"- {order['dish_name']} (Ordered on: {time.ctime(order['timestamp'])})" for order in order_history]) if order_history else "No order history available."
+
+    # Add popular trends context
+    popular_trends = "Current popular trends include plant-based proteins, fermented foods, and low-carb options."
+
+    prompt = f"""
+    Given the following:
+    - User profile: {user_profile}
+    - Order history: {order_summary}
+    - Popular trends: {popular_trends}
+    - Menu: {menu_text}
+
+    Tasks:
+    1. Recommend 5 dishes that align with the user's dietary preferences, allergies, past orders, and current trends.
+    2. For pasta dishes, suggest variations like gluten-free penne, zucchini noodles, or customizable sauces.
+    3. For desserts, suggest low-sugar, dairy-free, or healthy alternatives.
+
+    Format the response as:
+    **Recommended Dishes**:
+    - [Dish Name]: [Reason]
+    - ...
+    **Pasta Variations (if applicable)**:
+    - [Variation]: [Description]
+    - ...
+    **Dessert Alternatives (if applicable)**:
+    - [Alternative]: [Description]
+    - ...
+    """
     ai_result = gemini_model.generate_content(prompt).text.strip()
     st.markdown(ai_result)
 
@@ -203,67 +246,3 @@ with tab3:
             item_copy["ingredient_swap"] = ingredient_swap
             filtered_menu.append(item_copy)
     st.write(pd.DataFrame(filtered_menu))
-
-# TAB 4: Staff Gamification Upload
-with tab4:
-    st.header("Visual Menu Challenge Submission")
-
-    with st.form("challenge_form"):
-        staff_name = st.text_input("Staff Name")
-        dish_name = st.text_input("Dish Name")
-        ingredients = st.text_area("Ingredients (comma separated)")
-        plating_style = st.text_input("Plating Style")
-        challenge_image = st.file_uploader("Dish Photo", type=["jpg", "png"])
-        trendy = st.checkbox("Matches current food trends")
-        diet_match = st.checkbox("Matches dietary preferences")
-
-        submitted = st.form_submit_button("Submit Dish")
-
-        if submitted and challenge_image:
-            img_bytes = challenge_image.read()
-            img_blob = db.collection("visual_challenges").document()
-            img_blob.set({
-                "staff": staff_name,
-                "dish": dish_name,
-                "ingredients": [i.strip() for i in ingredients.split(",")],
-                "style": plating_style,
-                "trendy": trendy,
-                "diet_match": diet_match,
-                "timestamp": time.time(),
-                "views": 0,
-                "likes": 0,
-                "orders": 0
-            })
-            st.success("Dish submitted successfully!")
-
-# TAB 5: Leaderboard & Customer Feedback
-with tab5:
-    st.header("Leaderboard & Voting")
-
-    entries = fetch_challenge_entries()
-
-    for entry in entries:
-        with st.container():
-            st.subheader(f"{entry['dish']} by {entry['staff']}")
-            st.write(f"Style: {entry['style']}")
-            st.write(f"Ingredients: {', '.join(entry['ingredients'])}")
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button(f"❤️ Like ({entry['likes']})", key=f"like_{entry['id']}"):
-                    db.collection("visual_challenges").document(entry['id']).update({"likes": entry['likes'] + 1})
-                    st.experimental_rerun()
-            with col2:
-                if st.button(f"👀 View ({entry['views']})", key=f"view_{entry['id']}"):
-                    db.collection("visual_challenges").document(entry['id']).update({"views": entry['views'] + 1})
-                    st.experimental_rerun()
-            with col3:
-                if st.button(f"🛒 Order ({entry['orders']})", key=f"order_{entry['id']}"):
-                    db.collection("visual_challenges").document(entry['id']).update({"orders": entry['orders'] + 1})
-                    st.experimental_rerun()
-
-    # Show leaderboard
-    st.subheader("🏆 Live Leaderboard")
-    leaderboard = sorted(entries, key=lambda e: calculate_score(e), reverse=True)
-    for i, entry in enumerate(leaderboard[:5]):
-        st.write(f"**#{i+1} - {entry['dish']} by {entry['staff']} → {calculate_score(entry)} pts**")
