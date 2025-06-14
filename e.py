@@ -64,6 +64,22 @@ ALLERGY_MAPPING = {
     "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream"]
 }
 
+# Dietary tag mapping: Expanded to handle more variations
+DIETARY_TAG_MAPPING = {
+    "vegan": "Vegan",
+    "plant-based": "Vegan",
+    "veg": "Vegan",
+    "vegetarian": "Vegetarian",
+    "veggie": "Vegetarian",
+    "keto": "Keto",
+    "ketogenic": "Keto",
+    "gluten-free": "Gluten-Free",
+    "gf": "Gluten-Free",
+    "gluten free": "Gluten-Free",
+    "paleo": "Paleo",
+    "paleolithic": "Paleo"
+}
+
 # Sidebar Preferences
 st.sidebar.header("Customer Preferences")
 dietary = st.sidebar.multiselect("Diet", ["Vegan", "Vegetarian", "Keto", "Gluten-Free", "Paleo"], default=[])
@@ -247,7 +263,7 @@ with tab2:
     ai_result = gemini_model.generate_content(prompt).text.strip()
     st.markdown(ai_result)
 
-# TAB 3: Custom Filtering Options (Fixed)
+# TAB 3: Custom Filtering Options (Enhanced Debugging and Handling)
 with tab3:
     st.header("Custom Menu Filters")
     portion = st.selectbox("Portion Size", ["Regular", "Small", "Large"])
@@ -255,12 +271,27 @@ with tab3:
 
     menu = fetch_menu()
     filtered_menu = []
-    for item in menu:
-        tags = [tag.lower() for tag in item.get("dietary_tags", [])]  # Case-insensitive matching
-        ingredients = [ing.lower() for ing in item.get("ingredients", [])]
+    debug_info = []  # To store debug information about why items are filtered out
 
-        # Dietary filter: Match if any selected diet is in the item's tags
-        diet_match = not dietary or any(d.lower() in tags for d in dietary)
+    for item in menu:
+        # Standardize dietary tags
+        raw_tags = item.get("dietary_tags", [])
+        if not raw_tags:  # If dietary_tags is missing or empty, assume the item matches all diets
+            tags = []
+            diet_match = True  # Allow the item to pass the dietary filter if tags are missing
+            debug_info.append(f"Item '{item['name']}' has no dietary_tags. Assuming it matches all dietary preferences.")
+        else:
+            tags = []
+            for tag in raw_tags:
+                tag_lower = tag.lower()
+                # Map alternative tags to standard ones
+                standardized_tag = DIETARY_TAG_MAPPING.get(tag_lower, tag_lower)
+                tags.append(standardized_tag)
+
+            # Dietary filter: Match if any selected diet is in the item's tags
+            diet_match = not dietary or any(d.lower() in tags for d in dietary)
+
+        ingredients = [ing.lower() for ing in item.get("ingredients", [])]
 
         # Allergy filter: Exclude items containing allergens
         allergy_match = True
@@ -269,6 +300,12 @@ with tab3:
             if any(allergen.lower() in ingredients for allergen in allergens):
                 allergy_match = False
                 break
+
+        # Debug why an item was filtered out
+        if not diet_match:
+            debug_info.append(f"Item '{item['name']}' filtered out due to dietary mismatch. Selected diets: {dietary}, Item tags: {raw_tags}")
+        elif not allergy_match:
+            debug_info.append(f"Item '{item['name']}' filtered out due to allergy mismatch. Selected allergies: {allergies}, Item ingredients: {item.get('ingredients', [])}")
 
         if diet_match and allergy_match:
             item_copy = item.copy()
@@ -280,6 +317,16 @@ with tab3:
         st.write(pd.DataFrame(filtered_menu))
     else:
         st.warning("No menu items match your dietary preferences and allergy restrictions.")
+        # Display debug info to help diagnose the issue
+        with st.expander("Debug Information: Why were items filtered out?"):
+            if debug_info:
+                for info in debug_info:
+                    st.write(info)
+            else:
+                st.write("No items in the menu. Please check if the 'menu' collection in Firestore is populated.")
+            # Show the entire menu for further inspection
+            st.write("Raw menu data from Firestore:")
+            st.write(pd.DataFrame(menu))
 
 # TAB 4: Staff Gamification Upload
 with tab4:
