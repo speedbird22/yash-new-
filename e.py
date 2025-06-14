@@ -173,22 +173,6 @@ with tab1:
         except Exception as e:
             st.error(f"AI analysis failed: {e}")
 
-        # Feedback form
-        with st.form("feedback_form"):
-            feedback = st.radio("Is the predicted dish correct?", ["Yes", "No"])
-            correct_dish = st.text_input("If No, what is the correct dish?", disabled=feedback == "Yes")
-            feedback_submitted = st.form_submit_button("Submit Feedback")
-            if feedback_submitted:
-                db.collection("dish_feedback").add({
-                    "labels": combined_labels,
-                    "texts": texts,
-                    "predicted_dish": dish_guess,
-                    "feedback": feedback,
-                    "correct_dish": correct_dish if feedback == "No" else None,
-                    "timestamp": time.time()
-                })
-                st.success("Feedback submitted!")
-
 # TAB 2: Personalized Menu Recommendations
 with tab2:
     st.header("Personalized AI Menu")
