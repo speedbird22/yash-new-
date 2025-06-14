@@ -306,21 +306,26 @@ with tab3:
                 standardized_tag = DIETARY_TAG_MAPPING.get(tag_lower, tag_lower)
                 tags.append(standardized_tag.lower())  # Store tags in lowercase for comparison
 
-            # Dietary filter: Match if ALL selected diets are in the item's tags (case-insensitive)
-            diet_match = not dietary or all(d.lower() in tags for d in dietary)
+            # Dietary filter: Match if ANY selected diet is in the item's tags (case-insensitive)
+            diet_match = not dietary or any(d.lower() in tags for d in dietary)
             debug_info.append(f"Item '{item['name']}': Dietary match check - Selected diets: {dietary}, Standardized tags (lowercase): {tags}, Match: {diet_match}")
 
         ingredients = [ing.lower() for ing in item.get("ingredients", [])]
 
-        # Allergy filter: Exclude items containing allergens (with partial matching)
+        # Allergy filter: Exclude items containing allergens (with word-based matching)
         allergy_match = True
         for allergy in allergies:
             allergens = ALLERGY_MAPPING.get(allergy, [])
             for allergen in allergens:
-                # Check if any ingredient contains the allergen (e.g., "peanut butter" contains "peanuts")
-                if any(allergen.lower() in ing for ing in ingredients):
-                    allergy_match = False
-                    debug_info.append(f"Item '{item['name']}' filtered out: Contains allergen '{allergen}' (from allergy '{allergy}'). Ingredients: {ingredients}")
+                # Check if the allergen is a whole word in any ingredient
+                # Split ingredients into words and check for exact matches
+                for ing in ingredients:
+                    words = ing.split()
+                    if allergen.lower() in words:  # Exact word match
+                        allergy_match = False
+                        debug_info.append(f"Item '{item['name']}' filtered out: Contains allergen '{allergen}' (from allergy '{allergy}'). Ingredients: {ingredients}")
+                        break
+                if not allergy_match:
                     break
             if not allergy_match:
                 break
