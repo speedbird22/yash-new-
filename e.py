@@ -4,11 +4,12 @@ from google.oauth2 import service_account
 import firebase_admin
 from firebase_admin import credentials, firestore
 import google.generativeai as genai
-from PIL import Image
+from PIL import Image, ImageEnhance
 import io
 import pandas as pd
 import random
 import time
+import uuid
 
 # Streamlit config
 st.set_page_config(page_title="Next-Gen Dish Recommender + Gamification", layout="wide")
@@ -48,23 +49,6 @@ def calculate_score(entry):
     if entry.get("diet_match"): base_score += 3
     return base_score
 
-def calculate_rating(entry, user_dietary):
-    """Calculate a 1-5 star rating based on demand, popularity, and trends."""
-    if not entry:
-        return 0, "Not Rated"
-    
-    # Calculate raw score
-    score = entry.get("views", 0) * 1 + entry.get("likes", 0) * 2 + entry.get("orders", 0) * 3
-    if entry.get("trendy"): score += 5
-    if user_dietary and any(tag in entry.get("ingredients", []) for tag in user_dietary):
-        score += 3
-
-    # Normalize to 1-5 stars (assuming max score of 50 for simplicity)
-    max_score = 50  # Adjust based on observed max values in your data
-    normalized_score = min(max(int((score / max_score) * 5), 1), 5)
-    star_rating = "★" * normalized_score + "☆" * (5 - normalized_score)
-    return normalized_score, star_rating
-
 # Sidebar Preferences
 st.sidebar.header("Customer Preferences")
 dietary = st.sidebar.multiselect("Diet", ["Vegan", "Vegetarian", "Keto", "Gluten-Free", "Paleo"], default=[])
@@ -73,29 +57,75 @@ allergies = st.sidebar.multiselect("Allergies", ["Nut-Free", "Shellfish-Free", "
 # TABS
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📷 AI Dish Detection", "🎯 Personalized Menu", "⚙️ Custom Filters", "🏅 Visual Menu Challenge", "📊 Leaderboard"])
 
-# TAB 1: AI Dish Detection
+# TAB 1: AI Dish Detection (Updated)
 with tab1:
     st.header("Visual Dish Detection (AI + Vision API)")
     uploaded_file = st.file_uploader("Upload Food Image", type=["jpg", "jpeg", "png"])
     if uploaded_file:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded", use_column_width=True)
+        # Preprocess image
+        image = Image.open(uploaded_file).convert("RGB")
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.2)
+        st.image(image, caption="Uploaded Image", use_column_width=True)
         img_bytes = io.BytesIO()
-        image.save(img_bytes, format=image.format)
+        image.save(img_bytes, format="JPEG")
         content = img_bytes.getvalue()
 
+        # Vision API: Label detection and object localization
         response = vision_client.label_detection(image=vision.Image(content=content))
-        labels = [label.description for label in response.label_annotations][:5]
-        dish_guess = genai.GenerativeModel("gemini-1.5-flash").generate_content(
-            f"Predict the most likely dish from these labels: {labels}"
-        ).text.strip()
+        labels = [label.description for label in response.label_annotations if label.score > 0.7]
+        obj_response = vision_client.object_localization(image=vision.Image(content=content))
+        objects = [obj.name for obj in obj_response.localized_object_annotations]
 
-        # Get rating for predicted dish
-        challenge_entries = fetch_challenge_entries()
-        dish_entry = next((entry for entry in challenge_entries if entry['dish'].lower() == dish_guess.lower()), None)
-        rating, star_rating = calculate_rating(dish_entry, dietary)
-        
-        st.success(f"Predicted Dish: {dish_guess}\n**Rating**: {star_rating} ({rating}/5)")
+        # Combine labels and objects
+        combined_labels = list(set(labels + objects))
+        st.write(f"Detected Labels and Objects: {combined_labels}")
+
+        # Check if food-related
+        food_related = any(label.lower() in ["food", "dish", "meal"] or "food" in label.lower() for label in combined_labels)
+        if not food_related:
+            st.warning("The image doesn't appear to contain food. Please upload a food-related image.")
+            st.stop()
+
+        # Cross-reference with menu
+        menu = fetch_menu()
+        menu_text = "\n".join([f"{item['name']}: {item.get('description', '')} ({', '.join(item.get('dietary_tags', []))})" for item in menu])
+        user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
+        matching_dishes = []
+        for item in menu:
+            ingredients = item.get('ingredients', [])
+            tags = item.get('dietary_tags', [])
+            if any(label.lower() in ' '.join(ingredients + tags).lower() for label in combined_labels):
+                matching_dishes.append(item['name'])
+
+        # Gemini prompt with context
+        prompt = f"""
+        Based on the following image labels and objects: {combined_labels}
+        And the user's profile: {user_profile}
+        Predict the most likely dish from this menu:
+        {menu_text}
+        If no exact match, suggest the closest dish and explain why it fits the labels and profile.
+        Format the response as:
+        **Dish**: [Dish Name]
+        **Explanation**: [Reasoning]
+        """
+        dish_guess = gemini_model.generate_content(prompt).text.strip()
+        st.success(f"Predicted Dish:\n{dish_guess}")
+
+        # Feedback form
+        with st.form("feedback_form"):
+            feedback = st.radio("Is the predicted dish correct?", ["Yes", "No"])
+            correct_dish = st.text_input("If No, what is the correct dish?", disabled=feedback == "Yes")
+            feedback_submitted = st.form_submit_button("Submit Feedback")
+            if feedback_submitted:
+                db.collection("dish_feedback").add({
+                    "labels": combined_labels,
+                    "predicted_dish": dish_guess,
+                    "feedback": feedback,
+                    "correct_dish": correct_dish if feedback == "No" else None,
+                    "timestamp": time.time()
+                })
+                st.success("Feedback submitted!")
 
 # TAB 2: Personalized Menu Recommendations
 with tab2:
@@ -106,26 +136,9 @@ with tab2:
         for item in menu
     ])
     user_profile = f"Diet: {', '.join(dietary) if dietary else 'None'}, Allergies: {', '.join(allergies) if allergies else 'None'}"
-    prompt = f"""
-    Given user profile ({user_profile}) recommend 5 dishes from this menu:
-    {menu_text}
-    For each dish, provide a brief explanation of why it suits the user's profile.
-    Format the response as a list with dish name, description, and reason for recommendation.
-    """
+    prompt = f"Given user profile ({user_profile}) recommend 5 dishes:\n{menu_text}"
     ai_result = gemini_model.generate_content(prompt).text.strip()
-
-    # Add ratings to recommended dishes
-    challenge_entries = fetch_challenge_entries()
-    formatted_result = ""
-    for line in ai_result.split("\n"):
-        if line.startswith("- **") or line.startswith("**"):  # Assuming Gemini returns dish names in bold
-            dish_name = line.strip("- *").split(":")[0].strip()
-            dish_entry = next((entry for entry in challenge_entries if entry['dish'].lower() == dish_name.lower()), None)
-            rating, star_rating = calculate_rating(dish_entry, dietary)
-            formatted_result += f"{line} **Rating**: {star_rating} ({rating}/5)\n"
-        else:
-            formatted_result += f"{line}\n"
-    st.markdown(formatted_result)
+    st.markdown(ai_result)
 
 # TAB 3: Custom Filtering Options
 with tab3:
@@ -134,7 +147,6 @@ with tab3:
     ingredient_swap = st.text_input("Ingredient Swap")
 
     filtered_menu = []
-    challenge_entries = fetch_challenge_entries()
     for item in menu:
         tags = item.get("dietary_tags", [])
         ingredients = item.get("ingredients", [])
@@ -143,11 +155,6 @@ with tab3:
             item_copy = item.copy()
             item_copy["portion_size"] = portion
             item_copy["ingredient_swap"] = ingredient_swap
-            # Add rating if dish is in challenge_entries
-            dish_entry = next((entry for entry in challenge_entries if entry['dish'].lower() == item['name'].lower()), None)
-            rating, star_rating = calculate_rating(dish_entry, dietary)
-            item_copy["rating"] = star_rating
-            item_copy["rating_score"] = rating
             filtered_menu.append(item_copy)
     st.write(pd.DataFrame(filtered_menu))
 
@@ -191,8 +198,7 @@ with tab5:
 
     for entry in entries:
         with st.container():
-            rating, star_rating = calculate_rating(entry, dietary)
-            st.subheader(f"{entry['dish']} by {entry['staff']} ({star_rating})")
+            st.subheader(f"{entry['dish']} by {entry['staff']}")
             st.write(f"Style: {entry['style']}")
             st.write(f"Ingredients: {', '.join(entry['ingredients'])}")
 
@@ -212,7 +218,6 @@ with tab5:
 
     # Show leaderboard
     st.subheader("🏆 Live Leaderboard")
-    leaderboard = sorted(entries, key=lambda e: calculate_rating(e, dietary)[0], reverse=True)
+    leaderboard = sorted(entries, key=lambda e: calculate_score(e), reverse=True)
     for i, entry in enumerate(leaderboard[:5]):
-        rating, star_rating = calculate_rating(entry, dietary)
-        st.write(f"**#{i+1} - {entry['dish']} by {entry['staff']} → {star_rating} ({rating}/5, Score: {calculate_score(entry)} pts)**")
+        st.write(f"**#{i+1} - {entry['dish']} by {entry['staff']} → {calculate_score(entry)} pts**")
