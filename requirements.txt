@@ -1,0 +1,7 @@
+streamlit 
+google-cloud-vision
+google-generativeai
+firebase-admin
+python-dotenv
+pillow
+pandas
