@@ -58,10 +58,10 @@ def calculate_score(entry):
 
 # Allergy mapping: Map "Allergy-Free" labels to actual allergens
 ALLERGY_MAPPING = {
-    "Nut-Free": ["peanuts", "almonds", "walnuts", "cashews", "hazelnuts"],
-    "Shellfish-Free": ["shrimp", "crab", "lobster", "mussels", "clams"],
-    "Soy-Free": ["soy", "tofu", "soybean", "edamame"],
-    "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream"]
+    "Nut-Free": ["peanuts", "almonds", "walnuts", "cashews", "hazelnuts", "peanut butter", "almond milk", "almond extract", "nut"],
+    "Shellfish-Free": ["shrimp", "crab", "lobster", "mussels", "clams", "prawns", "shellfish"],
+    "Soy-Free": ["soy", "tofu", "soybean", "edamame", "soy sauce", "soy milk", "tamari"],
+    "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream", "whey", "casein", "lactose"]
 }
 
 # Dietary tag mapping: Expanded to handle more variations
@@ -69,15 +69,24 @@ DIETARY_TAG_MAPPING = {
     "vegan": "Vegan",
     "plant-based": "Vegan",
     "veg": "Vegan",
+    "plantbased": "Vegan",
     "vegetarian": "Vegetarian",
     "veggie": "Vegetarian",
+    "vegie": "Vegetarian",
+    "vegetarian-friendly": "Vegetarian",
     "keto": "Keto",
     "ketogenic": "Keto",
+    "low-carb": "Keto",
+    "lowcarb": "Keto",
     "gluten-free": "Gluten-Free",
     "gf": "Gluten-Free",
     "gluten free": "Gluten-Free",
+    "glutenfree": "Gluten-Free",
     "paleo": "Paleo",
-    "paleolithic": "Paleo"
+    "paleolithic": "Paleo",
+    "whole30": "Paleo",
+    "grain-free": "Paleo",
+    "grainfree": "Paleo"
 }
 
 # Sidebar Preferences
@@ -263,11 +272,12 @@ with tab2:
     ai_result = gemini_model.generate_content(prompt).text.strip()
     st.markdown(ai_result)
 
-# TAB 3: Custom Filtering Options (Enhanced Debugging and Handling)
+# TAB 3: Custom Filtering Options (Updated Filtering Logic)
 with tab3:
     st.header("Custom Menu Filters")
     portion = st.selectbox("Portion Size", ["Regular", "Small", "Large"])
     ingredient_swap = st.text_input("Ingredient Swap")
+    include_untagged = st.checkbox("Include items without dietary tags when preferences are selected", value=False)
 
     menu = fetch_menu()
     filtered_menu = []
@@ -276,42 +286,55 @@ with tab3:
     for item in menu:
         # Standardize dietary tags
         raw_tags = item.get("dietary_tags", [])
-        if not raw_tags:  # If dietary_tags is missing or empty, assume the item matches all diets
+        if not raw_tags:  # If dietary_tags is missing or empty
             tags = []
-            diet_match = True  # Allow the item to pass the dietary filter if tags are missing
-            debug_info.append(f"Item '{item['name']}' has no dietary_tags. Assuming it matches all dietary preferences.")
+            if dietary:  # If a dietary preference is selected
+                if include_untagged:
+                    diet_match = True
+                    debug_info.append(f"Item '{item['name']}' included: No dietary_tags present, but 'Include untagged items' is enabled.")
+                else:
+                    diet_match = False
+                    debug_info.append(f"Item '{item['name']}' filtered out: No dietary_tags present, and dietary preferences ({dietary}) were selected.")
+            else:  # If no dietary preferences are selected, include the item
+                diet_match = True
+                debug_info.append(f"Item '{item['name']}' included: No dietary_tags present, and no dietary preferences selected.")
         else:
             tags = []
             for tag in raw_tags:
                 tag_lower = tag.lower()
                 # Map alternative tags to standard ones
                 standardized_tag = DIETARY_TAG_MAPPING.get(tag_lower, tag_lower)
-                tags.append(standardized_tag)
+                tags.append(standardized_tag.lower())  # Store tags in lowercase for comparison
 
-            # Dietary filter: Match if any selected diet is in the item's tags
-            diet_match = not dietary or any(d.lower() in tags for d in dietary)
+            # Dietary filter: Match if ALL selected diets are in the item's tags (case-insensitive)
+            diet_match = not dietary or all(d.lower() in tags for d in dietary)
+            debug_info.append(f"Item '{item['name']}': Dietary match check - Selected diets: {dietary}, Standardized tags (lowercase): {tags}, Match: {diet_match}")
 
         ingredients = [ing.lower() for ing in item.get("ingredients", [])]
 
-        # Allergy filter: Exclude items containing allergens
+        # Allergy filter: Exclude items containing allergens (with partial matching)
         allergy_match = True
         for allergy in allergies:
             allergens = ALLERGY_MAPPING.get(allergy, [])
-            if any(allergen.lower() in ingredients for allergen in allergens):
-                allergy_match = False
+            for allergen in allergens:
+                # Check if any ingredient contains the allergen (e.g., "peanut butter" contains "peanuts")
+                if any(allergen.lower() in ing for ing in ingredients):
+                    allergy_match = False
+                    debug_info.append(f"Item '{item['name']}' filtered out: Contains allergen '{allergen}' (from allergy '{allergy}'). Ingredients: {ingredients}")
+                    break
+            if not allergy_match:
                 break
-
-        # Debug why an item was filtered out
-        if not diet_match:
-            debug_info.append(f"Item '{item['name']}' filtered out due to dietary mismatch. Selected diets: {dietary}, Item tags: {raw_tags}")
-        elif not allergy_match:
-            debug_info.append(f"Item '{item['name']}' filtered out due to allergy mismatch. Selected allergies: {allergies}, Item ingredients: {item.get('ingredients', [])}")
 
         if diet_match and allergy_match:
             item_copy = item.copy()
             item_copy["portion_size"] = portion
             item_copy["ingredient_swap"] = ingredient_swap
             filtered_menu.append(item_copy)
+        else:
+            if not diet_match:
+                debug_info.append(f"Item '{item['name']}' filtered out due to dietary mismatch. Selected diets: {dietary}, Item tags: {raw_tags}")
+            elif not allergy_match:
+                debug_info.append(f"Item '{item['name']}' filtered out due to allergy mismatch. Selected allergies: {allergies}, Item ingredients: {item.get('ingredients', [])}")
 
     if filtered_menu:
         st.write(pd.DataFrame(filtered_menu))
