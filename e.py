@@ -56,6 +56,14 @@ def calculate_score(entry):
     if entry.get("diet_match"): base_score += 3
     return base_score
 
+# Allergy mapping: Map "Allergy-Free" labels to actual allergens
+ALLERGY_MAPPING = {
+    "Nut-Free": ["peanuts", "almonds", "walnuts", "cashews", "hazelnuts"],
+    "Shellfish-Free": ["shrimp", "crab", "lobster", "mussels", "clams"],
+    "Soy-Free": ["soy", "tofu", "soybean", "edamame"],
+    "Dairy-Free": ["milk", "cheese", "yogurt", "butter", "cream"]
+}
+
 # Sidebar Preferences
 st.sidebar.header("Customer Preferences")
 dietary = st.sidebar.multiselect("Diet", ["Vegan", "Vegetarian", "Keto", "Gluten-Free", "Paleo"], default=[])
@@ -239,23 +247,39 @@ with tab2:
     ai_result = gemini_model.generate_content(prompt).text.strip()
     st.markdown(ai_result)
 
-# TAB 3: Custom Filtering Options
+# TAB 3: Custom Filtering Options (Fixed)
 with tab3:
     st.header("Custom Menu Filters")
     portion = st.selectbox("Portion Size", ["Regular", "Small", "Large"])
     ingredient_swap = st.text_input("Ingredient Swap")
 
+    menu = fetch_menu()
     filtered_menu = []
     for item in menu:
-        tags = item.get("dietary_tags", [])
-        ingredients = item.get("ingredients", [])
-        if (not dietary or any(d in tags for d in dietary)) and \
-           (not allergies or all(a not in ingredients for a in allergies)):
+        tags = [tag.lower() for tag in item.get("dietary_tags", [])]  # Case-insensitive matching
+        ingredients = [ing.lower() for ing in item.get("ingredients", [])]
+
+        # Dietary filter: Match if any selected diet is in the item's tags
+        diet_match = not dietary or any(d.lower() in tags for d in dietary)
+
+        # Allergy filter: Exclude items containing allergens
+        allergy_match = True
+        for allergy in allergies:
+            allergens = ALLERGY_MAPPING.get(allergy, [])
+            if any(allergen.lower() in ingredients for allergen in allergens):
+                allergy_match = False
+                break
+
+        if diet_match and allergy_match:
             item_copy = item.copy()
             item_copy["portion_size"] = portion
             item_copy["ingredient_swap"] = ingredient_swap
             filtered_menu.append(item_copy)
-    st.write(pd.DataFrame(filtered_menu))
+
+    if filtered_menu:
+        st.write(pd.DataFrame(filtered_menu))
+    else:
+        st.warning("No menu items match your dietary preferences and allergy restrictions.")
 
 # TAB 4: Staff Gamification Upload
 with tab4:
