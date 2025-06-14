@@ -305,15 +305,15 @@ with tab5:
             with col1:
                 if st.button(f"❤️ Like ({entry['likes']})", key=f"like_{entry['id']}"):
                     db.collection("visual_challenges").document(entry['id']).update({"likes": entry['likes'] + 1})
-                    st.experimental_rerun()
+                    st.rerun()
             with col2:
                 if st.button(f"👀 View ({entry['views']})", key=f"view_{entry['id']}"):
                     db.collection("visual_challenges").document(entry['id']).update({"views": entry['views'] + 1})
-                    st.experimental_rerun()
+                    st.rerun()
             with col3:
                 if st.button(f"🛒 Order ({entry['orders']})", key=f"order_{entry['id']}"):
                     db.collection("visual_challenges").document(entry['id']).update({"orders": entry['orders'] + 1})
-                    st.experimental_rerun()
+                    st.rerun()
 
     # Show leaderboard
     st.subheader("🏆 Live Leaderboard")
